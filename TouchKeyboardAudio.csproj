@@ -12,7 +12,7 @@
     <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
     <Deterministic>true</Deterministic>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <StartupObject>TouchKeyboardAudio.Program</StartupObject>
+    <StartupObject>TouchKeyboardAudioUwp.Program</StartupObject>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
     <DebugSymbols>true</DebugSymbols>
@@ -43,6 +43,8 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="TouchKeyboardAudio.cs" />
+    <Compile Include="TouchKeyboardAudioFloat.cs" />
+    <Compile Include="UwpShell.cs" />
     <None Include="app.manifest" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
