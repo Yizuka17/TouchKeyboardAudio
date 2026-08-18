@@ -1,0 +1,40 @@
+name: Build Windows EXE
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build Release
+        shell: pwsh
+        run: |
+          msbuild .\TouchKeyboardAudio.csproj /m /t:Rebuild /p:Configuration=Release /p:Platform=AnyCPU
+
+      - name: Verify output
+        shell: pwsh
+        run: |
+          $exe = '.\bin\Release\TouchKeyboardAudio.exe'
+          if (-not (Test-Path $exe)) { throw "Missing build output: $exe" }
+          Get-Item $exe | Format-List Name, Length, LastWriteTime
+
+      - name: Upload EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: TouchKeyboardAudio-Windows
+          path: bin/Release/TouchKeyboardAudio.exe
+          if-no-files-found: error
+          retention-days: 30
