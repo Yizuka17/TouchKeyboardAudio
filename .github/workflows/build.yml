@@ -3,6 +3,8 @@ name: Build Windows EXE
 on:
   push:
     branches: [ main ]
+  pull_request:
+    branches: [ main ]
   workflow_dispatch:
 
 permissions:
@@ -40,7 +42,7 @@ jobs:
           retention-days: 30
 
       - name: Write build status
-        if: always()
+        if: always() && github.event_name == 'push'
         shell: pwsh
         run: |
           $artifact = if ('${{ steps.build.outcome }}' -eq 'success') { 'TouchKeyboardAudio-Windows' } else { $null }
@@ -54,7 +56,7 @@ jobs:
           $status | ConvertTo-Json | Set-Content -Encoding utf8 build-status.json
 
       - name: Commit build status
-        if: always()
+        if: always() && github.event_name == 'push'
         shell: pwsh
         run: |
           git config user.name "github-actions[bot]"
