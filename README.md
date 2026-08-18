@@ -14,16 +14,36 @@
 - `KbdAccentPicker.wav`
 - `KbdSwipeGesture.wav`
 
-程序把同一个 SystemApps 包根目录下 `Assets\Kbd*.wav` 当作微软原版基线，因此每次应用都会从原版重新生成目标增益，不会叠加；“恢复原版”也会直接从这套基线恢复。
+首次运行会把同包根目录 `Assets\Kbd*.wav` 复制到 `C:\ProgramData\TouchKeyboardAudio\TextInputAssets\Baseline_*.wav` 作为只读处理基线。之后每次应用都从这套基线重新生成目标音效，不会叠加增益；“恢复原版”也直接从这套基线恢复。
+
+## DSP 模式
+
+### 智能限制器（推荐）
+
+处理链：
+
+`PCM16 -> float -> requested gain -> 1.5 ms look-ahead limiter -> -1.0 dBFS ceiling -> 10 ms release -> TPDF dither -> PCM16`
+
+限制器在整个 WAV 已经拿到手的前提下提前观察后续峰值，因此可以在峰值真正到来之前降低增益，避免原来那种直接把超过 16-bit 上限的波形切平。多声道 WAV 使用 linked gain，避免破坏左右声道关系。
+
+### 线性安全（无削顶）
+
+计算 5 个原始音效中最高峰值所允许的全局线性增益。如果用户请求值超过安全余量，程序自动把实际增益限制到安全上限。这个模式不做动态压缩，也不产生硬削顶，并保持 5 个音效之间的相对响度。
+
+### 硬削顶（A/B 对比）
+
+保留传统直接截断方式，主要用于和智能限制器做听感对比。
 
 ## 功能
 
 - Fluent 风格 WPF 界面与 Windows 10 Acrylic 背景
 - `-20 dB` ～ `+30 dB`，0.5 dB 步进
-- 首次打开默认停在 `+20 dB`，只有点击“应用”才会写入
-- 实时显示振幅倍率与预计 PCM 削顶率
+- 默认 `+20 dB` + 智能限制器
+- 实时显示预计受限峰值、线性安全上限和最大 gain reduction
+- TPDF dither 后重新量化为 PCM16
 - 一键应用增益 / 恢复微软原版 WAV
-- 自动停止并重新拉起 `TabTip` / `TextInputHost`，处理资源占用
+- 先生成全部 5 个临时 WAV，再开始替换；替换中任何一步失败都会尝试自动回滚全部目标文件
+- 自动停止并重新拉起 `TabTip` / `TextInputHost`
 - 自动请求管理员权限
 - 自动定位 `MicrosoftWindows.Client.CBS_*` SystemApps 包
 - 不修改 `TextInput.dll`，不修改 `tabskb.dll`
@@ -34,10 +54,6 @@
 
 本地也可以使用 Visual Studio / MSBuild 构建 `TouchKeyboardAudio.csproj`。
 
-## 注意
+## 关于“无损 +20 dB”
 
-正增益是直接修改 WAV PCM 振幅，因此较高增益会产生削顶。程序会在应用前显示预计削顶比例；`+20 dB` 相当于振幅约 `10×`。
-
-程序会修改 `C:\Windows\SystemApps` 中的键盘 WAV 资源，所以需要管理员权限。Windows Update 可能恢复这些文件；点击“恢复原版”也可以随时把 `InputApp\Assets` 还原为包内根目录的微软原版资源。
-
-程序还会在 `C:\ProgramData\TouchKeyboardAudio\TextInputAssets` 保存一份只读意义上的安全副本，但正常应用和恢复都优先使用当前 SystemApps 包里的微软原版基线。
+16-bit PCM 有固定的数字满刻度。原始峰值如果在放大后超过 0 dBFS，就不可能在同一个 PCM16 容器里既保持原波形比例、又完整保留超过满刻度的幅度。因此工具提供两种尽量干净的方案：线性安全模式保证不削顶；智能限制器则允许更高的主观响度，但只压低真正会越界的峰值，避免 hard clipping。
