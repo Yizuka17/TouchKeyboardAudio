@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -20,21 +20,53 @@ jobs:
         uses: microsoft/setup-msbuild@v2
 
       - name: Build Release
+        id: build
+        continue-on-error: true
         shell: pwsh
         run: |
-          msbuild .\TouchKeyboardAudio.csproj /m /t:Rebuild /p:Configuration=Release /p:Platform=AnyCPU
-
-      - name: Verify output
-        shell: pwsh
-        run: |
+          msbuild .\TouchKeyboardAudio.csproj /m /t:Rebuild /p:Configuration=Release /p:Platform=AnyCPU 2>&1 | Tee-Object -FilePath build.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $exe = '.\bin\Release\TouchKeyboardAudio.exe'
           if (-not (Test-Path $exe)) { throw "Missing build output: $exe" }
           Get-Item $exe | Format-List Name, Length, LastWriteTime
 
       - name: Upload EXE
+        if: steps.build.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: TouchKeyboardAudio-Windows
           path: bin/Release/TouchKeyboardAudio.exe
           if-no-files-found: error
           retention-days: 30
+
+      - name: Write build status
+        if: always()
+        shell: pwsh
+        run: |
+          $artifact = if ('${{ steps.build.outcome }}' -eq 'success') { 'TouchKeyboardAudio-Windows' } else { $null }
+          $status = [ordered]@{
+            run_id = [long]'${{ github.run_id }}'
+            run_number = [int]'${{ github.run_number }}'
+            sha = '${{ github.sha }}'
+            outcome = '${{ steps.build.outcome }}'
+            artifact = $artifact
+          }
+          $status | ConvertTo-Json | Set-Content -Encoding utf8 build-status.json
+
+      - name: Commit build status
+        if: always()
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add build-status.json
+          git diff --cached --quiet
+          if ($LASTEXITCODE -ne 0) {
+            git commit -m "Update build status [skip ci]"
+            git push origin HEAD:main
+          }
+
+      - name: Mark failed build
+        if: steps.build.outcome != 'success'
+        shell: pwsh
+        run: exit 1
