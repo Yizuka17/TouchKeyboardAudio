@@ -535,7 +535,7 @@ namespace TouchKeyboardAudioFloat
         static byte[] BuildFloatWave(byte[] source, WaveInfo info, double gain)
         {
             int sampleCount = info.DataSize / 2;
-            int frames = sampleCount / Math.Max(1, info.Channels);
+            int frames = sampleCount / Math.Max(1, (int)info.Channels);
 
             using (var ms = new MemoryStream())
             using (var bw = new BinaryWriter(ms))
