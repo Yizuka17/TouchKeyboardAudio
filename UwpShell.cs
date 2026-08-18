@@ -31,7 +31,6 @@ namespace TouchKeyboardAudioUwp
             if (content == null)
                 return;
 
-            // Detach the existing, already-tested functional UI and put a UWP-style shell around it.
             window.Content = null;
 
             var frame = new Border
@@ -131,7 +130,7 @@ namespace TouchKeyboardAudioUwp
             style.Setters.Add(new Setter(Control.BackgroundProperty, Brushes.Transparent));
             style.Setters.Add(new Setter(Control.BorderThicknessProperty, new Thickness(0)));
             style.Setters.Add(new Setter(Control.TemplateProperty, (ControlTemplate)XamlReader.Parse(
-                "<ControlTemplate xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation' TargetType='{x:Type Button}'>" +
+                "<ControlTemplate xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation' xmlns:x='http://schemas.microsoft.com/winfx/2006/xaml' TargetType='{x:Type Button}'>" +
                 "<Border Background='{TemplateBinding Background}'><ContentPresenter HorizontalAlignment='Center' VerticalAlignment='Center'/></Border>" +
                 "</ControlTemplate>")));
 
