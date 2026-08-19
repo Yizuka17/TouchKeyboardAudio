@@ -1,5 +1,4 @@
 using System;
-using System.Linq;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Windows;
@@ -38,9 +37,9 @@ namespace TouchKeyboardAudioUwp
 
         public static ThemeSnapshot Read()
         {
-            ThemeSnapshot value;
-            if (TryReadUiSettings(out value))
-                return value;
+            ThemeSnapshot snapshot;
+            if (TryReadUiSettings(out snapshot))
+                return snapshot;
 
             Color accent = ReadDwmAccent();
             bool dark = ReadRegistryDarkFallback();
@@ -48,7 +47,7 @@ namespace TouchKeyboardAudioUwp
             return new ThemeSnapshot
             {
                 Dark = dark,
-                AdvancedEffectsEnabled = true,
+                AdvancedEffectsEnabled = !SystemParameters.HighContrast,
                 Accent = accent,
                 AccentDark1 = Blend(accent, Colors.Black, 0.16),
                 AccentLight1 = Blend(accent, Colors.White, 0.16),
@@ -100,7 +99,7 @@ namespace TouchKeyboardAudioUwp
                 snapshot = new ThemeSnapshot
                 {
                     Dark = Luma(background) < Luma(foreground),
-                    AdvancedEffectsEnabled = advancedEffects,
+                    AdvancedEffectsEnabled = advancedEffects && !SystemParameters.HighContrast,
                     Accent = ForceOpaque(accent),
                     AccentDark1 = ForceOpaque(accentDark1),
                     AccentLight1 = ForceOpaque(accentLight1),
@@ -132,6 +131,7 @@ namespace TouchKeyboardAudioUwp
             PropertyInfo info = type.GetProperty(property);
             if (info == null)
                 throw new MissingMemberException(type.FullName, property);
+
             return Convert.ToByte(info.GetValue(value, null));
         }
 
@@ -258,6 +258,94 @@ namespace TouchKeyboardAudioUwp
         }
     }
 
+    sealed class ShellElements
+    {
+        public Slider Slider;
+        public TextBlock DbText;
+        public TextBlock GainText;
+        public TextBlock PeakText;
+        public TextBlock MixText;
+        public TextBlock StatusText;
+        public Button ApplyButton;
+        public Button RestoreButton;
+
+        public TextBlock CaptionTitle;
+        public Button MinimizeButton;
+        public Button CloseButton;
+        public TextBlock PageTitle;
+        public TextBlock Subtitle;
+        public Border InfoSeparator;
+        public TextBlock FormatLabel;
+        public TextBlock FooterNote;
+
+        public static ShellElements Capture(TouchKeyboardAudioFloat.MainWindow window)
+        {
+            var elements = new ShellElements
+            {
+                Slider = ReadField<Slider>(window, "slider"),
+                DbText = ReadField<TextBlock>(window, "dbText"),
+                GainText = ReadField<TextBlock>(window, "gainText"),
+                PeakText = ReadField<TextBlock>(window, "peakText"),
+                MixText = ReadField<TextBlock>(window, "mixText"),
+                StatusText = ReadField<TextBlock>(window, "statusText"),
+                ApplyButton = ReadField<Button>(window, "applyButton"),
+                RestoreButton = ReadField<Button>(window, "restoreButton")
+            };
+
+            Detach(elements.Slider);
+            Detach(elements.DbText);
+            Detach(elements.GainText);
+            Detach(elements.PeakText);
+            Detach(elements.MixText);
+            Detach(elements.StatusText);
+            Detach(elements.ApplyButton);
+            Detach(elements.RestoreButton);
+
+            return elements;
+        }
+
+        static T ReadField<T>(object owner, string name) where T : class
+        {
+            FieldInfo field = owner.GetType().GetField(
+                name,
+                BindingFlags.Instance | BindingFlags.NonPublic);
+
+            if (field == null)
+                throw new MissingFieldException(owner.GetType().FullName, name);
+
+            T value = field.GetValue(owner) as T;
+            if (value == null)
+                throw new InvalidOperationException("Frontend field is unavailable: " + name);
+
+            return value;
+        }
+
+        static void Detach(FrameworkElement element)
+        {
+            if (element == null)
+                return;
+
+            DependencyObject parent = element.Parent;
+            Panel panel = parent as Panel;
+            if (panel != null)
+            {
+                panel.Children.Remove(element);
+                return;
+            }
+
+            Decorator decorator = parent as Decorator;
+            if (decorator != null && decorator.Child == element)
+            {
+                decorator.Child = null;
+                return;
+            }
+
+            ContentControl content = parent as ContentControl;
+            if (content != null && content.Content == element)
+                content.Content = null;
+        }
+    }
+
     sealed class ShellController
     {
         const int WM_SETTINGCHANGE = 0x001A;
@@ -268,19 +356,7 @@ namespace TouchKeyboardAudioUwp
 
         readonly TouchKeyboardAudioFloat.MainWindow window;
         readonly Border frame;
-        readonly TextBlock captionTitle;
-        readonly Button minimizeButton;
-        readonly Button closeButton;
-        readonly TextBlock pageTitle;
-        readonly TextBlock subtitle;
-        readonly Slider slider;
-        readonly TextBlock dbText;
-        readonly TextBlock gainText;
-        readonly Border infoSeparator;
-        readonly TextBlock[] infoTexts;
-        readonly TextBlock footerNote;
-        readonly Button restoreButton;
-        readonly Button applyButton;
+        readonly ShellElements elements;
 
         HwndSource source;
         bool refreshQueued;
@@ -289,39 +365,19 @@ namespace TouchKeyboardAudioUwp
         public ShellController(
             TouchKeyboardAudioFloat.MainWindow window,
             Border frame,
-            TextBlock captionTitle,
-            Button minimizeButton,
-            Button closeButton,
-            TextBlock pageTitle,
-            TextBlock subtitle,
-            Slider slider,
-            TextBlock dbText,
-            TextBlock gainText,
-            Border infoSeparator,
-            TextBlock[] infoTexts,
-            TextBlock footerNote,
-            Button restoreButton,
-            Button applyButton)
+            ShellElements elements)
         {
             this.window = window;
             this.frame = frame;
-            this.captionTitle = captionTitle;
-            this.minimizeButton = minimizeButton;
-            this.closeButton = closeButton;
-            this.pageTitle = pageTitle;
-            this.subtitle = subtitle;
-            this.slider = slider;
-            this.dbText = dbText;
-            this.gainText = gainText;
-            this.infoSeparator = infoSeparator;
-            this.infoTexts = infoTexts ?? new TextBlock[0];
-            this.footerNote = footerNote;
-            this.restoreButton = restoreButton;
-            this.applyButton = applyButton;
+            this.elements = elements;
         }
 
         public void Initialize()
         {
+            elements.Slider.ValueChanged += delegate { ReapplyDynamicAccent(); };
+            elements.ApplyButton.Click += delegate { ReapplyDynamicAccent(); };
+            elements.RestoreButton.Click += delegate { ReapplyDynamicAccent(); };
+
             RefreshTheme(false);
 
             window.SourceInitialized += delegate
@@ -345,7 +401,12 @@ namespace TouchKeyboardAudioUwp
             };
         }
 
-        IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+        IntPtr WndProc(
+            IntPtr hwnd,
+            int msg,
+            IntPtr wParam,
+            IntPtr lParam,
+            ref bool handled)
         {
             if (msg == WM_SETTINGCHANGE ||
                 msg == WM_SYSCOLORCHANGE ||
@@ -378,11 +439,7 @@ namespace TouchKeyboardAudioUwp
         {
             theme = SystemTheme.Read();
             bool dark = theme.Dark;
-
             Color accent = theme.Accent;
-            Color accentDark = theme.AccentDark1;
-            Color accentLight = theme.AccentLight1;
-            string accentHex = Hex(accent);
 
             window.Background = Brush(
                 dark
@@ -391,46 +448,48 @@ namespace TouchKeyboardAudioUwp
             window.Foreground = Brush(dark ? "#FFF2F2F2" : "#FF1A1A1A");
 
             frame.BorderBrush = Brush(dark ? "#334A4A4A" : "#22000000");
-            captionTitle.Foreground = Brush(dark ? "#FFE6E6E6" : "#FF333333");
-            minimizeButton.Style = UwpShell.CaptionButtonStyle(false, dark);
-            closeButton.Style = UwpShell.CaptionButtonStyle(true, dark);
 
-            pageTitle.Foreground = Brush(dark ? "#FFF6F6F6" : "#FF171717");
-            subtitle.Foreground = Brush(dark ? "#FFB9B9B9" : "#FF666666");
+            elements.CaptionTitle.Foreground = Brush(dark ? "#FFE6E6E6" : "#FF333333");
+            elements.MinimizeButton.Style = UwpShell.CaptionButtonStyle(false, dark);
+            elements.CloseButton.Style = UwpShell.CaptionButtonStyle(true, dark);
 
-            dbText.Foreground = new SolidColorBrush(accent);
-            gainText.Foreground = Brush(dark ? "#FFB7B7B7" : "#FF606060");
+            elements.PageTitle.Foreground = Brush(dark ? "#FFF6F6F6" : "#FF171717");
+            elements.Subtitle.Foreground = Brush(dark ? "#FFB9B9B9" : "#FF666666");
+            elements.DbText.Foreground = new SolidColorBrush(accent);
+            elements.GainText.Foreground = Brush(dark ? "#FFB7B7B7" : "#FF606060");
 
-            slider.Style = (Style)XamlReader.Parse(
-                UwpShell.SliderStyle(dark, accent, accentDark, accentLight));
+            elements.Slider.Style = (Style)XamlReader.Parse(
+                UwpShell.SliderStyle(dark, accent));
 
-            if (infoSeparator != null)
-                infoSeparator.BorderBrush = Brush(dark ? "#35FFFFFF" : "#1E000000");
+            elements.InfoSeparator.BorderBrush =
+                Brush(dark ? "#35FFFFFF" : "#1E000000");
 
-            for (int i = 0; i < infoTexts.Length; i++)
-            {
-                TextBlock text = infoTexts[i];
-                if (i == 0)
-                    text.Foreground = new SolidColorBrush(accent);
-                else
-                    text.Foreground = Brush(dark ? "#FFB7B7B7" : "#FF666666");
-            }
+            elements.PeakText.Foreground = new SolidColorBrush(accent);
+            elements.MixText.Foreground = Brush(dark ? "#FFB7B7B7" : "#FF666666");
+            elements.StatusText.Foreground = Brush(dark ? "#FFB7B7B7" : "#FF666666");
+            elements.FormatLabel.Foreground = Brush(dark ? "#FF9D9D9D" : "#FF777777");
 
-            if (footerNote != null)
-            {
-                footerNote.Text =
-                    "Windows 10 · System theme · " +
-                    (theme.FromUiSettings ? "UISettings" : "DWM fallback") +
-                    " · IEEE Float32";
-                footerNote.Foreground = Brush(dark ? "#FF9D9D9D" : "#FF777777");
-            }
+            elements.FooterNote.Text =
+                "Windows 10 · System theme · " +
+                (theme.FromUiSettings ? "UISettings" : "DWM fallback") +
+                " · IEEE Float32";
+            elements.FooterNote.Foreground =
+                Brush(dark ? "#FF9D9D9D" : "#FF777777");
 
-            if (restoreButton != null)
-                UwpShell.StyleActionButton(
-                    restoreButton, false, dark, accent, accentDark, accentLight);
-            if (applyButton != null)
-                UwpShell.StyleActionButton(
-                    applyButton, true, dark, accent, accentDark, accentLight);
+            UwpShell.StyleActionButton(
+                elements.RestoreButton,
+                false,
+                dark,
+                theme.Accent,
+                theme.AccentDark1,
+                theme.AccentLight1);
+            UwpShell.StyleActionButton(
+                elements.ApplyButton,
+                true,
+                dark,
+                theme.Accent,
+                theme.AccentDark1,
+                theme.AccentLight1);
 
             if (updateComposition)
             {
@@ -445,14 +504,18 @@ namespace TouchKeyboardAudioUwp
             }
         }
 
+        void ReapplyDynamicAccent()
+        {
+            if (theme == null)
+                return;
+
+            elements.DbText.Foreground = new SolidColorBrush(theme.Accent);
+            elements.PeakText.Foreground = new SolidColorBrush(theme.Accent);
+        }
+
         static Brush Brush(string value)
         {
             return (Brush)new BrushConverter().ConvertFromString(value);
-        }
-
-        static string Hex(Color value)
-        {
-            return string.Format("#{0:X2}{1:X2}{2:X2}{3:X2}", value.A, value.R, value.G, value.B);
         }
     }
 
@@ -460,6 +523,9 @@ namespace TouchKeyboardAudioUwp
     {
         public static void Apply(TouchKeyboardAudioFloat.MainWindow window)
         {
+            ShellElements elements = ShellElements.Capture(window);
+
+            window.Content = null;
             window.Width = 700;
             window.Height = 510;
             window.MinWidth = 700;
@@ -467,12 +533,6 @@ namespace TouchKeyboardAudioUwp
             window.ResizeMode = ResizeMode.NoResize;
             window.WindowStyle = WindowStyle.None;
             window.FontFamily = new FontFamily("Segoe UI");
-
-            Grid content = window.Content as Grid;
-            if (content == null)
-                return;
-
-            window.Content = null;
 
             var frame = new Border
             {
@@ -482,73 +542,26 @@ namespace TouchKeyboardAudioUwp
 
             var outer = new Grid();
             outer.RowDefinitions.Add(new RowDefinition { Height = new GridLength(32) });
-            outer.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+            outer.RowDefinitions.Add(
+                new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
             frame.Child = outer;
 
-            TextBlock captionTitle;
-            Button minimizeButton;
-            Button closeButton;
-            Grid titleBar = MakeTitleBar(
-                window,
-                out captionTitle,
-                out minimizeButton,
-                out closeButton);
+            Grid titleBar = MakeTitleBar(window, elements);
             outer.Children.Add(titleBar);
 
-            content.Margin = new Thickness(40, 25, 40, 30);
-            Grid.SetRow(content, 1);
-            outer.Children.Add(content);
-
-            TextBlock pageTitle;
-            TextBlock subtitle;
-            Slider slider;
-            TextBlock dbText;
-            TextBlock gainText;
-            Border infoSeparator;
-            TextBlock[] infoTexts;
-            TextBlock footerNote;
-            Button restoreButton;
-            Button applyButton;
-
-            RestyleContent(
-                content,
-                out pageTitle,
-                out subtitle,
-                out slider,
-                out dbText,
-                out gainText,
-                out infoSeparator,
-                out infoTexts,
-                out footerNote,
-                out restoreButton,
-                out applyButton);
+            Grid page = MakePage(elements);
+            Grid.SetRow(page, 1);
+            outer.Children.Add(page);
 
             window.Content = frame;
 
-            var controller = new ShellController(
-                window,
-                frame,
-                captionTitle,
-                minimizeButton,
-                closeButton,
-                pageTitle,
-                subtitle,
-                slider,
-                dbText,
-                gainText,
-                infoSeparator,
-                infoTexts,
-                footerNote,
-                restoreButton,
-                applyButton);
+            var controller = new ShellController(window, frame, elements);
             controller.Initialize();
         }
 
         static Grid MakeTitleBar(
             Window window,
-            out TextBlock title,
-            out Button minimize,
-            out Button close)
+            ShellElements elements)
         {
             var bar = new Grid
             {
@@ -556,8 +569,14 @@ namespace TouchKeyboardAudioUwp
                 Background = Brushes.Transparent
             };
             bar.ColumnDefinitions.Add(new ColumnDefinition());
-            bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            bar.MouseLeftButtonDown += delegate(object sender, MouseButtonEventArgs e)
+            bar.ColumnDefinitions.Add(
+                new ColumnDefinition { Width = GridLength.Auto });
+
+            var dragRegion = new Border
+            {
+                Background = Brushes.Transparent
+            };
+            dragRegion.MouseLeftButtonDown += delegate(object sender, MouseButtonEventArgs e)
             {
                 if (e.ButtonState == MouseButtonState.Pressed)
                 {
@@ -565,16 +584,18 @@ namespace TouchKeyboardAudioUwp
                     catch { }
                 }
             };
+            bar.Children.Add(dragRegion);
 
-            title = new TextBlock
+            elements.CaptionTitle = new TextBlock
             {
                 Text = "Touch Keyboard Audio",
                 FontSize = 12,
                 FontWeight = FontWeights.Normal,
                 VerticalAlignment = VerticalAlignment.Center,
-                Margin = new Thickness(12, 0, 0, 0)
+                Margin = new Thickness(12, 0, 0, 0),
+                IsHitTestVisible = false
             };
-            bar.Children.Add(title);
+            bar.Children.Add(elements.CaptionTitle);
 
             var captions = new StackPanel
             {
@@ -584,17 +605,174 @@ namespace TouchKeyboardAudioUwp
             Grid.SetColumn(captions, 1);
             bar.Children.Add(captions);
 
-            minimize = CaptionButton("\uE921");
-            minimize.ToolTip = "最小化";
-            minimize.Click += delegate { window.WindowState = WindowState.Minimized; };
-            captions.Children.Add(minimize);
+            elements.MinimizeButton = CaptionButton("\uE921");
+            elements.MinimizeButton.ToolTip = "最小化";
+            elements.MinimizeButton.Click += delegate
+            {
+                window.WindowState = WindowState.Minimized;
+            };
+            captions.Children.Add(elements.MinimizeButton);
 
-            close = CaptionButton("\uE8BB");
-            close.ToolTip = "关闭";
-            close.Click += delegate { window.Close(); };
-            captions.Children.Add(close);
+            elements.CloseButton = CaptionButton("\uE8BB");
+            elements.CloseButton.ToolTip = "关闭";
+            elements.CloseButton.Click += delegate { window.Close(); };
+            captions.Children.Add(elements.CloseButton);
 
             return bar;
+        }
+
+        static Grid MakePage(ShellElements elements)
+        {
+            var page = new Grid
+            {
+                Margin = new Thickness(40, 25, 40, 30)
+            };
+
+            page.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            page.RowDefinitions.Add(new RowDefinition { Height = new GridLength(24) });
+            page.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            page.RowDefinitions.Add(new RowDefinition { Height = new GridLength(10) });
+            page.RowDefinitions.Add(new RowDefinition { Height = new GridLength(36) });
+            page.RowDefinitions.Add(new RowDefinition { Height = new GridLength(20) });
+            page.RowDefinitions.Add(new RowDefinition { Height = new GridLength(22) });
+            page.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            page.RowDefinitions.Add(
+                new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+            page.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+
+            var header = new StackPanel();
+            elements.PageTitle = new TextBlock
+            {
+                Text = "触摸键盘音量",
+                FontSize = 32,
+                FontWeight = FontWeights.Light
+            };
+            elements.Subtitle = new TextBlock
+            {
+                Text = "调整触摸键盘按键反馈音",
+                FontSize = 12,
+                Margin = new Thickness(1, 5, 0, 0)
+            };
+            header.Children.Add(elements.PageTitle);
+            header.Children.Add(elements.Subtitle);
+            page.Children.Add(header);
+
+            var values = new Grid();
+            Grid.SetRow(values, 2);
+            page.Children.Add(values);
+
+            elements.DbText.FontSize = 44;
+            elements.DbText.FontWeight = FontWeights.Light;
+            elements.DbText.Margin = new Thickness(0);
+            elements.DbText.VerticalAlignment = VerticalAlignment.Center;
+            values.Children.Add(elements.DbText);
+
+            elements.GainText.FontSize = 14;
+            elements.GainText.Margin = new Thickness(0);
+            elements.GainText.HorizontalAlignment = HorizontalAlignment.Right;
+            elements.GainText.VerticalAlignment = VerticalAlignment.Center;
+            values.Children.Add(elements.GainText);
+
+            elements.Slider.Height = 36;
+            elements.Slider.Margin = new Thickness(0);
+            Grid.SetRow(elements.Slider, 4);
+            page.Children.Add(elements.Slider);
+
+            var scale = new Grid();
+            scale.Children.Add(
+                ScaleLabel("-20 dB", HorizontalAlignment.Left));
+            scale.Children.Add(
+                ScaleLabel("0 dB", HorizontalAlignment.Center));
+            scale.Children.Add(
+                ScaleLabel("+30 dB", HorizontalAlignment.Right));
+            Grid.SetRow(scale, 5);
+            page.Children.Add(scale);
+
+            var info = new Grid();
+            info.ColumnDefinitions.Add(new ColumnDefinition());
+            info.ColumnDefinitions.Add(
+                new ColumnDefinition { Width = GridLength.Auto });
+
+            var infoLeft = new StackPanel();
+            elements.PeakText.FontSize = 12;
+            elements.PeakText.Margin = new Thickness(0);
+            elements.MixText.FontSize = 12;
+            elements.MixText.Margin = new Thickness(0, 5, 0, 0);
+            elements.StatusText.FontSize = 12;
+            elements.StatusText.Margin = new Thickness(0, 5, 0, 0);
+            infoLeft.Children.Add(elements.PeakText);
+            infoLeft.Children.Add(elements.MixText);
+            infoLeft.Children.Add(elements.StatusText);
+            info.Children.Add(infoLeft);
+
+            elements.FormatLabel = new TextBlock
+            {
+                Text = "5 个 WAV · IEEE Float32",
+                FontSize = 11,
+                VerticalAlignment = VerticalAlignment.Bottom,
+                Margin = new Thickness(20, 0, 0, 0)
+            };
+            Grid.SetColumn(elements.FormatLabel, 1);
+            info.Children.Add(elements.FormatLabel);
+
+            elements.InfoSeparator = new Border
+            {
+                BorderThickness = new Thickness(0, 1, 0, 0),
+                Padding = new Thickness(0, 14, 0, 0),
+                Child = info
+            };
+            Grid.SetRow(elements.InfoSeparator, 7);
+            page.Children.Add(elements.InfoSeparator);
+
+            var footer = new Grid();
+            footer.ColumnDefinitions.Add(new ColumnDefinition());
+            footer.ColumnDefinitions.Add(
+                new ColumnDefinition { Width = GridLength.Auto });
+            footer.ColumnDefinitions.Add(
+                new ColumnDefinition { Width = new GridLength(12) });
+            footer.ColumnDefinitions.Add(
+                new ColumnDefinition { Width = GridLength.Auto });
+            Grid.SetRow(footer, 9);
+            page.Children.Add(footer);
+
+            elements.FooterNote = new TextBlock
+            {
+                FontSize = 11,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            footer.Children.Add(elements.FooterNote);
+
+            elements.RestoreButton.Height = 32;
+            elements.RestoreButton.MinWidth = 102;
+            elements.RestoreButton.Padding = new Thickness(16, 0, 16, 0);
+            elements.RestoreButton.FontSize = 13;
+            elements.RestoreButton.FontWeight = FontWeights.Normal;
+            Grid.SetColumn(elements.RestoreButton, 1);
+            footer.Children.Add(elements.RestoreButton);
+
+            elements.ApplyButton.Height = 32;
+            elements.ApplyButton.MinWidth = 88;
+            elements.ApplyButton.Padding = new Thickness(16, 0, 16, 0);
+            elements.ApplyButton.FontSize = 13;
+            elements.ApplyButton.FontWeight = FontWeights.Normal;
+            Grid.SetColumn(elements.ApplyButton, 3);
+            footer.Children.Add(elements.ApplyButton);
+
+            return page;
+        }
+
+        static TextBlock ScaleLabel(
+            string text,
+            HorizontalAlignment alignment)
+        {
+            return new TextBlock
+            {
+                Text = text,
+                FontSize = 11,
+                VerticalAlignment = VerticalAlignment.Top,
+                HorizontalAlignment = alignment,
+                Foreground = Brush("#FF777777")
+            };
         }
 
         static Button CaptionButton(string glyph)
@@ -620,152 +798,58 @@ namespace TouchKeyboardAudioUwp
         internal static Style CaptionButtonStyle(bool close, bool dark)
         {
             var style = new Style(typeof(Button));
-            style.Setters.Add(new Setter(Control.BackgroundProperty, Brushes.Transparent));
-            style.Setters.Add(new Setter(
-                Control.ForegroundProperty,
-                Brush(dark ? "#FFF0F0F0" : "#FF202020")));
-            style.Setters.Add(new Setter(Control.BorderThicknessProperty, new Thickness(0)));
-            style.Setters.Add(new Setter(Control.TemplateProperty, (ControlTemplate)XamlReader.Parse(
-                "<ControlTemplate xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation' xmlns:x='http://schemas.microsoft.com/winfx/2006/xaml' TargetType='{x:Type Button}'>" +
-                "<Border x:Name='B' Background='{TemplateBinding Background}'>" +
-                "<ContentPresenter HorizontalAlignment='Center' VerticalAlignment='Center'/>" +
-                "</Border></ControlTemplate>")));
+            style.Setters.Add(
+                new Setter(Control.BackgroundProperty, Brushes.Transparent));
+            style.Setters.Add(
+                new Setter(
+                    Control.ForegroundProperty,
+                    Brush(dark ? "#FFF0F0F0" : "#FF202020")));
+            style.Setters.Add(
+                new Setter(Control.BorderThicknessProperty, new Thickness(0)));
+            style.Setters.Add(
+                new Setter(
+                    Control.TemplateProperty,
+                    (ControlTemplate)XamlReader.Parse(
+                        "<ControlTemplate xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation' xmlns:x='http://schemas.microsoft.com/winfx/2006/xaml' TargetType='{x:Type Button}'>" +
+                        "<Border x:Name='B' Background='{TemplateBinding Background}'>" +
+                        "<ContentPresenter HorizontalAlignment='Center' VerticalAlignment='Center'/>" +
+                        "</Border></ControlTemplate>")));
 
-            var hover = new Trigger { Property = UIElement.IsMouseOverProperty, Value = true };
-            hover.Setters.Add(new Setter(
-                Control.BackgroundProperty,
-                Brush(close ? "#FFE81123" : (dark ? "#30FFFFFF" : "#14000000"))));
+            var hover = new Trigger
+            {
+                Property = UIElement.IsMouseOverProperty,
+                Value = true
+            };
+            hover.Setters.Add(
+                new Setter(
+                    Control.BackgroundProperty,
+                    Brush(
+                        close
+                            ? "#FFE81123"
+                            : (dark ? "#30FFFFFF" : "#14000000"))));
             if (close)
-                hover.Setters.Add(new Setter(Control.ForegroundProperty, Brushes.White));
+                hover.Setters.Add(
+                    new Setter(Control.ForegroundProperty, Brushes.White));
             style.Triggers.Add(hover);
 
-            var pressed = new Trigger { Property = ButtonBase.IsPressedProperty, Value = true };
-            pressed.Setters.Add(new Setter(
-                Control.BackgroundProperty,
-                Brush(close ? "#FFC50F1F" : (dark ? "#4AFFFFFF" : "#24000000"))));
+            var pressed = new Trigger
+            {
+                Property = ButtonBase.IsPressedProperty,
+                Value = true
+            };
+            pressed.Setters.Add(
+                new Setter(
+                    Control.BackgroundProperty,
+                    Brush(
+                        close
+                            ? "#FFC50F1F"
+                            : (dark ? "#4AFFFFFF" : "#24000000"))));
             if (close)
-                pressed.Setters.Add(new Setter(Control.ForegroundProperty, Brushes.White));
+                pressed.Setters.Add(
+                    new Setter(Control.ForegroundProperty, Brushes.White));
             style.Triggers.Add(pressed);
 
             return style;
-        }
-
-        static void RestyleContent(
-            Grid root,
-            out TextBlock pageTitle,
-            out TextBlock subtitle,
-            out Slider slider,
-            out TextBlock dbText,
-            out TextBlock gainText,
-            out Border infoSeparator,
-            out TextBlock[] infoTexts,
-            out TextBlock footerNote,
-            out Button restoreButton,
-            out Button applyButton)
-        {
-            pageTitle = null;
-            subtitle = null;
-            slider = null;
-            dbText = null;
-            gainText = null;
-            infoSeparator = null;
-            infoTexts = new TextBlock[0];
-            footerNote = null;
-            restoreButton = null;
-            applyButton = null;
-
-            if (root.Children.Count < 3)
-                return;
-
-            StackPanel head = root.Children[0] as StackPanel;
-            Border card = root.Children[1] as Border;
-            Grid bottom = root.Children[2] as Grid;
-
-            if (head != null && head.Children.Count >= 2)
-            {
-                pageTitle = head.Children[0] as TextBlock;
-                subtitle = head.Children[1] as TextBlock;
-
-                if (pageTitle != null)
-                {
-                    pageTitle.FontSize = 32;
-                    pageTitle.FontWeight = FontWeights.Light;
-                }
-
-                if (subtitle != null)
-                {
-                    subtitle.Text = "调整触摸键盘按键反馈音";
-                    subtitle.FontSize = 12;
-                    subtitle.Margin = new Thickness(1, 5, 0, 0);
-                }
-            }
-
-            if (card != null)
-            {
-                card.Background = Brushes.Transparent;
-                card.BorderThickness = new Thickness(0);
-                card.CornerRadius = new CornerRadius(0);
-                card.Padding = new Thickness(0);
-
-                Grid panel = card.Child as Grid;
-                if (panel != null)
-                {
-                    if (panel.RowDefinitions.Count > 1) panel.RowDefinitions[1].Height = new GridLength(18);
-                    if (panel.RowDefinitions.Count > 3) panel.RowDefinitions[3].Height = new GridLength(7);
-                    if (panel.RowDefinitions.Count > 5) panel.RowDefinitions[5].Height = new GridLength(22);
-
-                    slider = panel.Children.OfType<Slider>().FirstOrDefault();
-                    if (slider != null)
-                        slider.Height = 36;
-
-                    Grid values = panel.Children.OfType<Grid>().FirstOrDefault(g => Grid.GetRow(g) == 0);
-                    if (values != null)
-                    {
-                        TextBlock[] texts = values.Children.OfType<TextBlock>().ToArray();
-                        if (texts.Length > 0)
-                        {
-                            dbText = texts[0];
-                            dbText.FontSize = 44;
-                            dbText.FontWeight = FontWeights.Light;
-                        }
-                        if (texts.Length > 1)
-                        {
-                            gainText = texts[1];
-                            gainText.FontSize = 14;
-                        }
-                    }
-
-                    Grid info = panel.Children.OfType<Grid>().FirstOrDefault(g => Grid.GetRow(g) == 6);
-                    if (info != null)
-                    {
-                        panel.Children.Remove(info);
-                        infoSeparator = new Border
-                        {
-                            BorderThickness = new Thickness(0, 1, 0, 0),
-                            Padding = new Thickness(0, 14, 0, 0),
-                            Child = info
-                        };
-                        Grid.SetRow(infoSeparator, 6);
-                        panel.Children.Add(infoSeparator);
-
-                        infoTexts = Descendants<TextBlock>(info);
-                        foreach (TextBlock text in infoTexts)
-                            if (text.FontSize >= 13) text.FontSize = 12;
-                    }
-                }
-            }
-
-            if (bottom != null)
-            {
-                footerNote = bottom.Children.OfType<TextBlock>().FirstOrDefault();
-                if (footerNote != null)
-                    footerNote.FontSize = 11;
-
-                restoreButton = bottom.Children.OfType<Button>().FirstOrDefault(
-                    b => Grid.GetColumn(b) == 1);
-                applyButton = bottom.Children.OfType<Button>().FirstOrDefault(
-                    b => Grid.GetColumn(b) == 3);
-            }
         }
 
         internal static void StyleActionButton(
@@ -776,21 +860,22 @@ namespace TouchKeyboardAudioUwp
             Color accentDark,
             Color accentLight)
         {
-            button.Height = 32;
-            button.MinWidth = primary ? 88 : 102;
-            button.Padding = new Thickness(16, 0, 16, 0);
-            button.FontSize = 13;
-            button.FontWeight = FontWeights.Normal;
-            button.BorderThickness = primary ? new Thickness(0) : new Thickness(1);
+            button.ClearValue(Control.BackgroundProperty);
+            button.ClearValue(Control.ForegroundProperty);
+            button.ClearValue(Control.BorderBrushProperty);
+            button.ClearValue(Control.BorderThicknessProperty);
             button.Style = (Style)XamlReader.Parse(
-                ButtonStyle(primary, dark, accent, accentDark, accentLight));
+                ButtonStyle(
+                    primary,
+                    dark,
+                    accent,
+                    accentDark,
+                    accentLight));
         }
 
         internal static string SliderStyle(
             bool dark,
-            Color accent,
-            Color accentDark,
-            Color accentLight)
+            Color accent)
         {
             string rail = dark ? "#FF6B6B6B" : "#FF8A8A8A";
             string thumb = dark ? "#FFFFFFFF" : "#FF171717";
@@ -836,57 +921,50 @@ namespace TouchKeyboardAudioUwp
             Color accentDark,
             Color accentLight)
         {
-            string bg = primary ? Hex(accent) : (dark ? "#18FFFFFF" : "#0A000000");
-            string fg = primary
-                ? (SystemTheme.UseDarkText(accent) ? "#FF000000" : "#FFFFFFFF")
-                : (dark ? "#FFF2F2F2" : "#FF1A1A1A");
+            string background =
+                primary ? Hex(accent) : (dark ? "#18FFFFFF" : "#0A000000");
+            string foreground =
+                primary
+                    ? (SystemTheme.UseDarkText(accent) ? "#FF000000" : "#FFFFFFFF")
+                    : (dark ? "#FFF2F2F2" : "#FF1A1A1A");
             string border = dark ? "#55FFFFFF" : "#55000000";
-            string hover = primary
-                ? Hex(dark ? accentLight : accentDark)
-                : (dark ? "#2AFFFFFF" : "#14000000");
-            string pressed = primary
-                ? Hex(accentDark)
-                : (dark ? "#3AFFFFFF" : "#22000000");
+            string hover =
+                primary
+                    ? Hex(dark ? accentLight : accentDark)
+                    : (dark ? "#2AFFFFFF" : "#14000000");
+            string pressed =
+                primary
+                    ? Hex(accentDark)
+                    : (dark ? "#3AFFFFFF" : "#22000000");
 
             return @"<Style xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation'
                      xmlns:x='http://schemas.microsoft.com/winfx/2006/xaml'
                      TargetType='{x:Type Button}'>
-<Setter Property='Background' Value='" + bg + @"'/>
-<Setter Property='Foreground' Value='" + fg + @"'/>
+<Setter Property='Background' Value='" + background + @"'/>
+<Setter Property='Foreground' Value='" + foreground + @"'/>
 <Setter Property='BorderBrush' Value='" + border + @"'/>
 <Setter Property='BorderThickness' Value='" + (primary ? "0" : "1") + @"'/>
 <Setter Property='Template'><Setter.Value><ControlTemplate TargetType='{x:Type Button}'>
-<Border x:Name='B' Background='{TemplateBinding Background}' BorderBrush='{TemplateBinding BorderBrush}' BorderThickness='{TemplateBinding BorderThickness}' CornerRadius='2'>
+<Border x:Name='B'
+        Background='{TemplateBinding Background}'
+        BorderBrush='{TemplateBinding BorderBrush}'
+        BorderThickness='{TemplateBinding BorderThickness}'
+        CornerRadius='2'>
   <ContentPresenter HorizontalAlignment='Center' VerticalAlignment='Center'/>
 </Border>
 <ControlTemplate.Triggers>
-  <Trigger Property='IsMouseOver' Value='True'><Setter TargetName='B' Property='Background' Value='" + hover + @"'/></Trigger>
-  <Trigger Property='IsPressed' Value='True'><Setter TargetName='B' Property='Background' Value='" + pressed + @"'/></Trigger>
-  <Trigger Property='IsEnabled' Value='False'><Setter TargetName='B' Property='Opacity' Value='.45'/></Trigger>
+  <Trigger Property='IsMouseOver' Value='True'>
+    <Setter TargetName='B' Property='Background' Value='" + hover + @"'/>
+  </Trigger>
+  <Trigger Property='IsPressed' Value='True'>
+    <Setter TargetName='B' Property='Background' Value='" + pressed + @"'/>
+  </Trigger>
+  <Trigger Property='IsEnabled' Value='False'>
+    <Setter TargetName='B' Property='Opacity' Value='.45'/>
+  </Trigger>
 </ControlTemplate.Triggers>
 </ControlTemplate></Setter.Value></Setter>
 </Style>";
-        }
-
-        static T[] Descendants<T>(DependencyObject root) where T : DependencyObject
-        {
-            var list = new System.Collections.Generic.List<T>();
-            Walk(root, list);
-            return list.ToArray();
-        }
-
-        static void Walk<T>(DependencyObject root, System.Collections.Generic.List<T> list)
-            where T : DependencyObject
-        {
-            if (root == null) return;
-            int count = VisualTreeHelper.GetChildrenCount(root);
-            for (int i = 0; i < count; i++)
-            {
-                DependencyObject child = VisualTreeHelper.GetChild(root, i);
-                T typed = child as T;
-                if (typed != null) list.Add(typed);
-                Walk(child, list);
-            }
         }
 
         static Brush Brush(string value)
@@ -896,7 +974,12 @@ namespace TouchKeyboardAudioUwp
 
         static string Hex(Color value)
         {
-            return string.Format("#{0:X2}{1:X2}{2:X2}{3:X2}", value.A, value.R, value.G, value.B);
+            return string.Format(
+                "#{0:X2}{1:X2}{2:X2}{3:X2}",
+                value.A,
+                value.R,
+                value.G,
+                value.B);
         }
     }
 
@@ -909,6 +992,7 @@ namespace TouchKeyboardAudioUwp
             {
                 var app = new Application();
                 app.ShutdownMode = ShutdownMode.OnMainWindowClose;
+
                 var window = new TouchKeyboardAudioFloat.MainWindow();
                 UwpShell.Apply(window);
                 app.Run(window);
