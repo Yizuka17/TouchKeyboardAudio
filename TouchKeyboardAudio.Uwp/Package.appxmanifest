@@ -9,7 +9,7 @@
   <Identity
     Name="Yizuka17.TouchKeyboardAudio"
     Publisher="CN=Yizuka17"
-    Version="1.1.0.1" />
+    Version="1.1.0.2" />
 
   <Properties>
     <DisplayName>Touch Keyboard Audio</DisplayName>
