@@ -23,6 +23,8 @@ namespace TouchKeyboardAudioBridge
             if (command == null)
                 return false;
 
+            CleanupOrphanedFloatTemps();
+
             string token = string.Empty;
             string responsePath = null;
 
@@ -81,8 +83,35 @@ namespace TouchKeyboardAudioBridge
                 }
                 catch { }
             }
+            finally
+            {
+                CleanupOrphanedFloatTemps();
+            }
 
             return true;
+        }
+
+        static void CleanupOrphanedFloatTemps()
+        {
+            try
+            {
+                string temp = Path.GetTempPath();
+                if (!Directory.Exists(temp))
+                    return;
+
+                DateTime cutoff = DateTime.UtcNow.AddMinutes(-10);
+                foreach (string path in Directory.GetFiles(temp, "TKA_float_*.wav", SearchOption.TopDirectoryOnly))
+                {
+                    try
+                    {
+                        DateTime lastWrite = File.GetLastWriteTimeUtc(path);
+                        if (lastWrite <= cutoff)
+                            File.Delete(path);
+                    }
+                    catch { }
+                }
+            }
+            catch { }
         }
 
         static string FindCommand(string[] args)
