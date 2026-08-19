@@ -5,6 +5,7 @@ using System.IO;
 using System.Threading.Tasks;
 using Windows.ApplicationModel;
 using Windows.ApplicationModel.Core;
+using Windows.Foundation;
 using Windows.Storage;
 using Windows.UI;
 using Windows.UI.ViewManagement;
@@ -23,6 +24,7 @@ namespace TouchKeyboardAudio.Uwp
         {
             InitializeComponent();
             ConfigureTitleBar();
+            ConfigureCompactWindow();
 
             object saved = ApplicationData.Current.LocalSettings.Values[LastDbKey];
             double initial = saved == null
@@ -38,6 +40,12 @@ namespace TouchKeyboardAudio.Uwp
 
             Loaded += async delegate
             {
+                try
+                {
+                    ApplicationView.GetForCurrentView().TryResizeView(new Size(520, 170));
+                }
+                catch { }
+
                 await DeleteBridgeFileIfPresentAsync("request.txt");
                 await DeleteBridgeFileIfPresentAsync("response.txt");
             };
@@ -50,6 +58,19 @@ namespace TouchKeyboardAudio.Uwp
             titleBar.ButtonBackgroundColor = Colors.Transparent;
             titleBar.ButtonInactiveBackgroundColor = Colors.Transparent;
             Window.Current.SetTitleBar(DragRegion);
+        }
+
+        void ConfigureCompactWindow()
+        {
+            try
+            {
+                ApplicationView view = ApplicationView.GetForCurrentView();
+                view.SetPreferredMinSize(new Size(420, 150));
+                ApplicationView.PreferredLaunchViewSize = new Size(520, 170);
+                ApplicationView.PreferredLaunchWindowingMode =
+                    ApplicationViewWindowingMode.PreferredLaunchViewSize;
+            }
+            catch { }
         }
 
         void RestorePersistedStatus(object saved, double db)
@@ -65,15 +86,14 @@ namespace TouchKeyboardAudio.Uwp
 
             if (string.Equals(operation, "restore", StringComparison.OrdinalIgnoreCase))
             {
-                StatusText.Text = "已恢复微软原版 PCM16";
+                StatusText.Text = "已恢复原版";
                 return;
             }
 
-            // Compatibility with builds that only persisted LastDb.
             if (saved != null)
             {
                 StatusText.Text = Math.Abs(db) < .05
-                    ? "上次记录：0.0 dB"
+                    ? "上次记录 0.0 dB"
                     : "已应用 " + FormatDb(db);
                 return;
             }
@@ -81,25 +101,20 @@ namespace TouchKeyboardAudio.Uwp
             StatusText.Text = "尚未应用";
         }
 
-        void GainSlider_ValueChanged(object sender, Windows.UI.Xaml.Controls.Primitives.RangeBaseValueChangedEventArgs e)
+        void GainSlider_ValueChanged(
+            object sender,
+            Windows.UI.Xaml.Controls.Primitives.RangeBaseValueChangedEventArgs e)
         {
             UpdatePreview();
         }
 
         void UpdatePreview()
         {
-            if (DbText == null || GainText == null || EstimateText == null)
+            if (DbText == null || GainSlider == null)
                 return;
 
             double db = Math.Round(GainSlider.Value * 2.0) / 2.0;
-            double gain = Math.Pow(10.0, db / 20.0);
-
             DbText.Text = FormatDb(db);
-            GainText.Text = gain.ToString("N2", CultureInfo.CurrentCulture) + "×";
-            EstimateText.Text = string.Format(
-                CultureInfo.CurrentCulture,
-                "按 TextInput 2% 内部增益估算，后级相对倍率约 {0:F3}×",
-                gain * 0.02);
         }
 
         async void ApplyButton_Click(object sender, RoutedEventArgs e)
@@ -136,7 +151,7 @@ namespace TouchKeyboardAudio.Uwp
 
                 await DeleteBridgeFileIfPresentAsync("response.txt");
 
-                StatusText.Text = "等待管理员后端……";
+                StatusText.Text = "等待管理员权限…";
                 await FullTrustProcessLauncher.LaunchFullTrustProcessForCurrentAppAsync(parameterGroup);
 
                 BackendResponse response = await WaitForResponseAsync(folder, token);
@@ -149,11 +164,13 @@ namespace TouchKeyboardAudio.Uwp
                 if (command == "restore")
                     GainSlider.Value = 0;
 
-                StatusText.Text = response.Message;
+                StatusText.Text = command == "restore"
+                    ? "已恢复原版"
+                    : "已应用 " + FormatDb(response.Db);
             }
             catch (Exception ex)
             {
-                StatusText.Text = "操作失败：" + ex.Message;
+                StatusText.Text = "失败：" + ex.Message;
             }
             finally
             {
