@@ -16,16 +16,31 @@ namespace TouchKeyboardAudio.Uwp
     public sealed partial class MainPage : Page
     {
         const double DefaultDb = 20.0;
+        const string LastDbKey = "LastDb";
+        const string LastOperationKey = "LastOperation";
 
         public MainPage()
         {
             InitializeComponent();
             ConfigureTitleBar();
 
-            object saved = ApplicationData.Current.LocalSettings.Values["LastDb"];
-            double initial = saved == null ? DefaultDb : Convert.ToDouble(saved, CultureInfo.InvariantCulture);
-            GainSlider.Value = Math.Max(GainSlider.Minimum, Math.Min(GainSlider.Maximum, initial));
+            object saved = ApplicationData.Current.LocalSettings.Values[LastDbKey];
+            double initial = saved == null
+                ? DefaultDb
+                : Convert.ToDouble(saved, CultureInfo.InvariantCulture);
+
+            GainSlider.Value = Math.Max(
+                GainSlider.Minimum,
+                Math.Min(GainSlider.Maximum, initial));
+
+            RestorePersistedStatus(saved, initial);
             UpdatePreview();
+
+            Loaded += async delegate
+            {
+                await DeleteBridgeFileIfPresentAsync("request.txt");
+                await DeleteBridgeFileIfPresentAsync("response.txt");
+            };
         }
 
         void ConfigureTitleBar()
@@ -35,6 +50,35 @@ namespace TouchKeyboardAudio.Uwp
             titleBar.ButtonBackgroundColor = Colors.Transparent;
             titleBar.ButtonInactiveBackgroundColor = Colors.Transparent;
             Window.Current.SetTitleBar(DragRegion);
+        }
+
+        void RestorePersistedStatus(object saved, double db)
+        {
+            object operationRaw = ApplicationData.Current.LocalSettings.Values[LastOperationKey];
+            string operation = operationRaw as string;
+
+            if (string.Equals(operation, "apply", StringComparison.OrdinalIgnoreCase))
+            {
+                StatusText.Text = "已应用 " + FormatDb(db);
+                return;
+            }
+
+            if (string.Equals(operation, "restore", StringComparison.OrdinalIgnoreCase))
+            {
+                StatusText.Text = "已恢复微软原版 PCM16";
+                return;
+            }
+
+            // Compatibility with builds that only persisted LastDb.
+            if (saved != null)
+            {
+                StatusText.Text = Math.Abs(db) < .05
+                    ? "上次记录：0.0 dB"
+                    : "已应用 " + FormatDb(db);
+                return;
+            }
+
+            StatusText.Text = "尚未应用";
         }
 
         void GainSlider_ValueChanged(object sender, Windows.UI.Xaml.Controls.Primitives.RangeBaseValueChangedEventArgs e)
@@ -90,12 +134,7 @@ namespace TouchKeyboardAudio.Uwp
                         token
                     });
 
-                try
-                {
-                    StorageFile stale = await folder.GetFileAsync("response.txt");
-                    await stale.DeleteAsync(StorageDeleteOption.PermanentDelete);
-                }
-                catch (FileNotFoundException) { }
+                await DeleteBridgeFileIfPresentAsync("response.txt");
 
                 StatusText.Text = "等待管理员后端……";
                 await FullTrustProcessLauncher.LaunchFullTrustProcessForCurrentAppAsync(parameterGroup);
@@ -104,7 +143,9 @@ namespace TouchKeyboardAudio.Uwp
                 if (!response.Ok)
                     throw new InvalidOperationException(response.Message);
 
-                ApplicationData.Current.LocalSettings.Values["LastDb"] = response.Db;
+                ApplicationData.Current.LocalSettings.Values[LastDbKey] = response.Db;
+                ApplicationData.Current.LocalSettings.Values[LastOperationKey] = command;
+
                 if (command == "restore")
                     GainSlider.Value = 0;
 
@@ -116,6 +157,8 @@ namespace TouchKeyboardAudio.Uwp
             }
             finally
             {
+                await DeleteBridgeFileIfPresentAsync("request.txt");
+                await DeleteBridgeFileIfPresentAsync("response.txt");
                 SetBusy(false);
                 UpdatePreview();
             }
@@ -153,6 +196,17 @@ namespace TouchKeyboardAudio.Uwp
             }
 
             throw new TimeoutException("管理员后端没有返回结果。");
+        }
+
+        async Task DeleteBridgeFileIfPresentAsync(string name)
+        {
+            try
+            {
+                StorageFile file = await ApplicationData.Current.LocalFolder.GetFileAsync(name);
+                await file.DeleteAsync(StorageDeleteOption.PermanentDelete);
+            }
+            catch (FileNotFoundException) { }
+            catch (UnauthorizedAccessException) { }
         }
 
         void SetBusy(bool busy)
