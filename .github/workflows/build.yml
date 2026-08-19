@@ -2,7 +2,7 @@ name: Build Windows EXE
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, feature/system-theme-accent ]
   pull_request:
     branches: [ main ]
   workflow_dispatch:
@@ -65,7 +65,7 @@ jobs:
           git diff --cached --quiet
           if ($LASTEXITCODE -ne 0) {
             git commit -m "Update build status [skip ci]"
-            git push origin HEAD:main
+            git push origin HEAD:${{ github.ref_name }}
           }
 
       - name: Mark failed build
